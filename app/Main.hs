@@ -8,6 +8,7 @@ module Main where
 import           ClassyPrelude                    hiding (hClose)
 import           Conduit
 import           Control.Concurrent.STM.TBQueue   (TBQueue, writeTBQueue)
+import qualified Control.Exception.Safe           as Ex
 import           Control.Monad.Catch              (MonadMask)
 import           Control.Monad.Writer
 import           Data.Bits                        (shiftR, (.&.))
@@ -19,6 +20,7 @@ import qualified Data.Text                        as T
 import           GHC.IO.Handle                    (Handle, hClose)
 import qualified Network.Simple.TCP               as TCP
 import qualified Network.Socket                   as NS
+import qualified System.IO                        as IO
 import           UnliftIO.Concurrent              (ThreadId, forkIO, threadDelay)
 
 type Error = [String]
@@ -83,8 +85,12 @@ serveTBQ :: forall a m. (MonadMask m, MonadUnliftIO m)
   -> m ()
   -- ^ Returns a FIFO (queue) of results from concurrent requests
 serveTBQ hp port rFun tbq = do
-    _ <- async $ withRunInIO $ \run -> TCP.serve hp port $ \(lsock, _) -> do
-      run $ void $ acceptTBQ lsock rFun tbq
+    _ <- async $ (putStrLn $ T.pack "entering serveTBQ async") >>
+      (withRunInIO $ \run -> do
+        putStrLn $ T.pack "before TCP.serve"
+        myserve hp port $ \(lsock, _) -> do
+          putStrLn $ T.pack "before run"
+          run $ (putStrLn $ T.pack "before acceptTBQ") >> acceptTBQ lsock rFun tbq >> (putStrLn $ T.pack "after acceptTBQ"))
     putStrLn $ T.pack "exiting serveTBQ"
 
 -- | Based on acceptFork from Network.Simple.TCP.
@@ -97,6 +103,7 @@ acceptTBQ :: forall a m.
   -> TBQueue a
   -> m ThreadId
 acceptTBQ lsock rFun tbq = mask $ \restore -> do
+  putStrLn $ T.pack "entered acceptTBQ computation"
   (csock, addr) <- trace ("running restore-accept on lsock: " <> (show lsock)) $ restore (liftIO $ NS.accept lsock)
   onException (forkIO $ finally
     (restore $ do
@@ -124,3 +131,57 @@ main = retryForever $ do
   let myProtoServe = protoServe (pure . words)
   myProtoServe .| mapMC (putStrLn . T.pack . intercalate "_") .| sinkUnits & runConduitRes
   putStrLn $ T.pack "tcp server exited"
+
+
+-- | Start a TCP server that accepts incoming connections and handles them
+-- concurrently in different threads.
+--
+-- Any acquired sockets are properly shut down and closed when done or in case
+-- of exceptions. Exceptions from the threads handling the individual
+-- connections won't cause 'serve' to die.
+--
+-- Note: This function performs 'listen', 'acceptFork', so don't perform
+-- those manually.
+myserve
+  :: MonadIO m
+  => TCP.HostPreference -- ^ Host to bind.
+  -> NS.ServiceName -- ^ Server service port name or number to bind.
+  -> ((NS.Socket, NS.SockAddr) -> IO ())
+  -- ^ Computation to run in a different thread once an incoming connection is
+  -- accepted. Takes the connection socket and remote end address.
+  -> m a -- ^ This function never returns.
+myserve hp port k = liftIO $ do
+    putStrLn $ T.pack "before listen"
+    mylisten hp port $ \(lsock, _) -> do
+       putStrLn $ T.pack "before serve forever"
+       forever $ Ex.catch
+          (void (TCP.acceptFork lsock k))
+          (\se -> IO.hPutStrLn IO.stderr (x ++ show (se :: Ex.SomeException)))
+  where
+    x :: String
+    x = "Network.Simple.TCP.serve: Synchronous exception accepting connection: "
+
+
+-- | Bind a TCP listening socket and use it.
+--
+-- The listening socket is closed when done or in case of exceptions.
+--
+-- If you prefer to acquire and close the socket yourself, then use 'bindSock'
+-- and 'closeSock', as well as 'listenSock' function.
+--
+-- Note: The 'NS.NoDelay', 'NS.KeepAlive' and 'NS.ReuseAddr' options are set on
+-- the socket. The maximum number of incoming queued connections is 2048.
+mylisten
+  :: (MonadIO m, Ex.MonadMask m)
+  => TCP.HostPreference -- ^ Host to bind.
+  -> NS.ServiceName -- ^ Server service port name or number to bind.
+  -> ((NS.Socket, NS.SockAddr) -> m r)
+  -- ^ Computation taking the listening socket and the address it's bound to.
+  -> m r
+mylisten hp port = Ex.bracket ((putStrLn $ T.pack "entering listen bracket") >>
+  (do putStrLn $ T.pack $ "entered listen-bracket do-block"
+      x@(bsock,_) <- TCP.bindSock hp port
+      putStrLn $ T.pack $ "bound socket " <> (show bsock)
+      TCP.listenSock bsock (max 2048 NS.maxListenQueue)
+      pure x))
+  (TCP.closeSock . fst)

@@ -39,6 +39,7 @@ executables:
     - mtl
     - network
     - network-simple
+    - safe-exceptions
     - stm
     - stm-conduit
     - text

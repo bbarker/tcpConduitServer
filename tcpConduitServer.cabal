@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 47298a205c2626fe66572b33697b64ce081f3b55a92dd2e16a87cfa03d2383d9
+-- hash: 2ee1eb75918386798164d44a1ef111e42d4c530c566ef12a7106489f9168de93
 
 name:           tcpConduitServer
 version:        0.1.0.0
@@ -41,21 +41,9 @@ executable tcpConduitServer-exe
     , mtl
     , network
     , network-simple
+    , safe-exceptions
     , stm
     , stm-conduit
     , text
     , unliftio
-  default-language: Haskell2010
-
-test-suite tcpConduitServer-test
-  type: exitcode-stdio-1.0
-  main-is: Spec.hs
-  other-modules:
-      Paths_tcpConduitServer
-  hs-source-dirs:
-      test
-  ghc-options: -threaded -rtsopts -with-rtsopts=-N
-  build-depends:
-      base >=4.7 && <5
-    , tcpConduitServer
   default-language: Haskell2010
