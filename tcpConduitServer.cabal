@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 2ee1eb75918386798164d44a1ef111e42d4c530c566ef12a7106489f9168de93
+-- hash: ca0522d8ace78d90e09d099ad8e69e4c7371fad026460446f48ec8e3a6c7e8ba
 
 name:           tcpConduitServer
 version:        0.1.0.0
@@ -38,6 +38,7 @@ executable tcpConduitServer-exe
     , classy-prelude
     , conduit
     , exceptions
+    , monad-loops
     , mtl
     , network
     , network-simple

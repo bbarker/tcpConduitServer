@@ -36,6 +36,7 @@ executables:
     - classy-prelude
     - conduit
     - exceptions
+    - monad-loops
     - mtl
     - network
     - network-simple

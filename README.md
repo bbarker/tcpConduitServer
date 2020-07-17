@@ -15,6 +15,6 @@ To update the script `./conduitServer.hs` to reflect the code under `app`, run `
 ## Executable
 
 ```
-stack --nix build && stack --nix exec tcpConduitServer-exe +RTS -N4
+stack --nix clean && stack --nix build && stack --nix exec tcpConduitServer-exe +RTS -N4
 ```
 
