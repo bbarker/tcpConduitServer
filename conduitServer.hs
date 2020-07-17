@@ -47,6 +47,11 @@ runResult = runWriter
 getPort :: NS.ServiceName
 getPort = "29876"
 
+waitForever :: IO ()
+waitForever = do
+  threadDelay 10000
+  waitForever
+
 -- | This signature is meant to simulate the same function from the proto-lens library,
 -- | but without dealing with protobus for binary data.
 decodeMessageDelimitedH :: Handle -> IO (Either String String)
@@ -141,3 +146,4 @@ main = retryForever $ do
   let myProtoServe = protoServe (pure . words)
   myProtoServe .| mapMC (putStrLn . T.pack . intercalate "_") .| sinkUnits & runConduitRes
   putStrLn $ T.pack "tcp server exited"
+  waitForever
