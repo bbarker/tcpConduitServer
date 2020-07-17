@@ -105,27 +105,11 @@ serveTBQ :: forall a m. (MonadMask m, MonadUnliftIO m)
   -> m ()
   -- ^ Returns a FIFO (queue) of results from concurrent requests
 serveTBQ hp port rFun tbq = do
-    _ <- async $ withRunInIO $ \run -> TCP.serve hp port $ \(lsock, _) -> do
-      run $ void $ acceptTBQ lsock rFun tbq
+    _ <- async $ withRunInIO $ \run -> TCP.serve hp port $ \(csock, addr) -> do
+      run $ void $ do
+        rVal <- trace "retrieved rVal in finally-restore" rFun (csock, addr)
+        atomically $ writeTBQueue tbq rVal
     putStrLn $ T.pack "exiting serveTBQ"
-
--- | Based on acceptFork from Network.Simple.TCP.
-acceptTBQ :: forall a m.
-  MonadUnliftIO m
-  => NS.Socket -- ^ Listening and bound socket.
-  -> ((NS.Socket, NS.SockAddr) -> m a)
-  -- ^ Computation to run in a different thread once an incoming connection is
-  -- accepted. Takes the connection socket and remote end address.
-  -> TBQueue a
-  -> m ThreadId
-acceptTBQ lsock rFun tbq = mask $ \restore -> do
-  (csock, addr) <- trace ("running restore-accept on lsock: " <> (show lsock)) $ restore (liftIO $ NS.accept lsock)
-  onException (forkIO $ finally
-    (restore $ do
-      rVal <- trace "retrieved rVal in finally-restore" rFun (csock, addr)
-      atomically $ writeTBQueue tbq rVal)
-    (TCP.closeSock csock))
-    (TCP.closeSock csock)
 
 retryForever :: forall m a. MonadUnliftIO m => m a -> m a
 retryForever prog = catchAny prog progRetry
