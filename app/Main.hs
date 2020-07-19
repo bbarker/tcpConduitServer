@@ -3,12 +3,20 @@
 {-# LANGUAGE RankNTypes                  #-}
 {-# LANGUAGE ScopedTypeVariables         #-}
 
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE PackageImports #-}
+{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE AllowAmbiguousTypes #-}
+
 module Main where
 
 import           ClassyPrelude                    hiding (hClose)
 import           Conduit
 import           Control.Concurrent.STM.TBQueue   (TBQueue, writeTBQueue)
 import           Control.Monad.Catch              (MonadMask)
+import           Control.Monad.Loops
 import           Control.Monad.Writer
 import           Data.Bits                        (shiftR, (.&.))
 import qualified Data.ByteString.Char8            as B
@@ -51,7 +59,7 @@ protoServe fromProto = start .| mapMC logFilterRead
     port = trace "getting protobuf port" getPort
     start = do
       let enQserver = serveTBQ (TCP.HostIPv4) port (decodeProto . fst)
-      gatherFrom 10000 enQserver
+      mygatherFrom 10000 enQserver
     decodeProto :: NS.Socket -> m (Either String String)
     decodeProto sock = bracket
       connHandleIO
@@ -67,7 +75,7 @@ protoServe fromProto = start .| mapMC logFilterRead
     msgToRecs :: String -> m [String]
     msgToRecs p = case runResult $ fromProto p of
       (rs, rErr) -> do
-        when (not $ null rErr) $ pure $ trace (intercalate "\n" rErr) ()
+        when (not $ null rErr) $ pure $ trace (intercalate " " rErr) ()
         pure $ trace "completed msgToRecs" rs
 
 -- | The handle only needs a read-view of the socket.  Note that a TBQeueue is
@@ -107,10 +115,89 @@ retryForever prog = catchAny prog progRetry
 sinkUnits :: MonadResource m => ConduitT () Void m ()
 sinkUnits = sinkNull
 
+-- -- | Gather output values asynchronously from an action in the base monad and
+-- --   then yield them downstream.  This provides a means of working around the
+-- --   restriction that 'ConduitM' cannot be an instance of 'MonadBaseControl'
+-- --   in order to, for example, yield values from within a Haskell callback
+-- --   function called from a C library.
+-- mygatherFrom :: forall m o. (MonadIO m, MonadUnliftIO m)
+--            => Int                -- ^ Size of the queue to create
+--            -> Int                -- ^ Microseconds to wait after finding queue empty before recheck
+--            -> (TBQueue o -> m ()) -- ^ Action that generates output values
+--            -> ConduitT () o m ()
+-- mygatherFrom size delay scatter = do
+--     liftIO $ putStrLn $ T.pack "entering gatherFrom"
+--     chan   <- liftIO $ newTBQueueIO (fromIntegral size)
+--     worker <- lift $ async (scatter chan)
+--     res <- gather worker chan
+--     liftIO $ putStrLn $ T.pack "leaving gatherFrom"
+--     pure res
+--   where
+--     -- readTBQueueRepeat :: TBQueue a -> IO a
+--     -- readTBQueueRepeat tbq = do
+--     --   isE <- atomically $ isEmptyTBQueue tbq
+--     --   case isE of
+--     --     True -> do
+--     --       threadDelay delay
+--     --       readTBQueueRepeat tbq
+--     --     False -> atomically $ readTBQueue tbq
+--     readTBQueueRepeat :: TBQueue a -> IO ()
+--     readTBQueueRepeat tbq = do
+--       isE <- atomically $ isEmptyTBQueue tbq
+--       case isE of
+--         True -> do
+--           threadDelay delay
+--           readTBQueueRepeat tbq
+--         False -> atomically $ readTBQueue tbq
+    
+--     gather :: Async b -> TBQueue o -> ConduitT i o m b
+--     gather worker chan = do
+--         (xs :: [o], mres) <- liftIO $ do
+--             putStrLn $ T.pack "before whileM"
+--             xs <- whileM (pure True) $ readTBQueueRepeat chan
+--             putStrLn $ T.pack "after whileM"            
+--             atomically $ (xs,) <$> pollSTM worker
+--         traverse_ yield xs
+--         case mres of
+--             Just (Left e)  -> liftIO $ throwIO (e :: SomeException)
+--             Just (Right r) -> return r
+--             Nothing        -> gather worker chan
+
+
+-- | Gather output values asynchronously from an action in the base monad and
+--   then yield them downstream.  This provides a means of working around the
+--   restriction that 'ConduitM' cannot be an instance of 'MonadBaseControl'
+--   in order to, for example, yield values from within a Haskell callback
+--   function called from a C library.
+mygatherFrom :: forall m o. (MonadIO m, MonadUnliftIO m)
+           => Int                -- ^ Size of the queue to create
+           -> (TBQueue o -> m ()) -- ^ Action that generates output values
+           -> ConduitT () o m ()
+mygatherFrom size scatter = do
+    liftIO $ putStrLn $ T.pack "entering gatherFrom"
+    chan   <- liftIO $ newTBQueueIO (fromIntegral size)
+    worker <- lift $ async (scatter chan)
+    res <- gather worker chan
+    liftIO $ putStrLn $ T.pack "leaving gatherFrom"
+    pure res
+  where
+    gather :: Async b -> TBQueue o -> ConduitT i o m b
+    gather worker chan = do
+        (xs :: [o], mres) <- liftIO $ atomically $ do
+            xs <- whileM (not <$> isEmptyTBQueue chan) (readTBQueue chan)
+            (xs,) <$> pollSTM worker
+        -- instead of doing traverse_, we can do one yield at a time
+        traverse_ yield xs
+        case mres of
+            Just (Left e)  -> liftIO $ throwIO (e :: SomeException)
+            -- Just (Right r) -> return r
+            _                -> gather worker chan
+
 main :: IO ()
 main = retryForever $ do
   putStrLn $ T.pack "starting tcp server"
   let myProtoServe = protoServe (pure . words)
-  myProtoServe .| mapMC (putStrLn . T.pack . intercalate "_") .| sinkUnits & runConduitRes
-  putStrLn $ T.pack "tcp server exited"
+  xs <- myProtoServe .| mapMC (putStrLn . T.pack . (":: " <> ) . intercalate "_") .| sinkUnits & runConduitRes
+  -- this next line will never be reached now:
+  putStrLn $ T.pack $ "tcp server exited with value: " <> (show xs) 
   waitForever
