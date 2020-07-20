@@ -27,6 +27,7 @@ import qualified Data.Text                        as T
 import           GHC.IO.Handle                    (Handle, hClose)
 import qualified Network.Simple.TCP               as TCP
 import qualified Network.Socket                   as NS
+import qualified System.IO                        as IO
 import           UnliftIO.Concurrent              (ThreadId, forkIO, threadDelay)
 
 type Error = [String]
@@ -43,6 +44,28 @@ waitForever = do
   threadDelay 10000
   waitForever
 
+
+-- | Wraps multiple calls to decodeMessageDelimitedH; instead of returning a list, we
+-- | maintain the type signature for simplicity.
+decodeMessages :: Handle -> IO (Either String String)
+decodeMessages h = do
+  putStrLn $ T.pack "starting decodeMessages"
+  msgs <- go ""
+  putStrLn $ T.pack "finishing decodeMessages"
+  pure msgs
+  where
+    go :: String -> IO (Either String String)
+    go xs = do
+      isR <- IO.hReady h
+      case isR of
+        False -> do
+          putStrLn $ T.pack "finishing go"
+          pure $ Right xs
+        True -> do
+          sOut <- B.unpack <$> B.hGetLine h
+          putStrLn $ T.pack $ "looping in go: " <> sOut <> xs
+          go (sOut <> xs)
+      
 -- | This signature is meant to simulate the same function from the proto-lens library,
 -- | but without dealing with protobus for binary data.
 decodeMessageDelimitedH :: Handle -> IO (Either String String)
@@ -64,7 +87,7 @@ protoServe fromProto = start .| mapMC logFilterRead
     decodeProto sock = bracket
       connHandleIO
       (liftIO . hClose)
-      (liftIO . decodeMessageDelimitedH)
+      (liftIO . decodeMessages)
       where
         connHandleIO :: m Handle
         connHandleIO = liftIO $ sockToHandle sock
